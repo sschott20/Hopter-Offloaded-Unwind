@@ -16,7 +16,7 @@ use stm32f4xx_hal::prelude::*;
 use stm32f4xx_hal::uart::{Rx, Tx};
 
 pub static mut G_UART_SESSION: Option<Session<UsartSerial, UsartTimer, 150, 2>> = None;
-
+// pub static SESSION_AVAILABLE_MAILBOX: Mailbox = Mailbox::new();
 pub const TIMEOUT_MS: u32 = 10000;
 
 pub static G_UART_MAILBOX: Mailbox = Mailbox::new();

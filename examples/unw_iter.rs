@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use hadusos::*;
 use hopter::interrupt::handler;
+use hopter::unwind::unw_catch::catch_unwind_with_arg;
 // use hopter::sync::Mailbox;
 // use hopter::unwind::unw_table::{UnwindByteIter, UnwindInstrIter};
 use hopter::{schedule, time::*};
@@ -58,40 +59,35 @@ fn main(_: cortex_m::Peripherals) {
     let usart_serial = UsartSerial { tx };
     let usart_timer = UsartTimer {};
     let session: Session<UsartSerial, UsartTimer, 150, 2> = Session::new(usart_serial, usart_timer);
-
     unsafe { G_UART_SESSION = Some(session) };
 
     // now we can panic and get restarted
-    match schedule::start_restartable_task(2, |_| will_panic(), (), 0, 4) {
-        Ok(_) => {
-            hprintln!("Task started");
-        }
-        Err(e) => {
-            hprintln!("Error: {:?}", e);
-        }
-    }
-    sleep_ms(40000);
-    hprintln!("finished with restarting tasks, exiting");
-    semihosting::terminate(true);
+    schedule::start_restartable_task(2, |_| will_panic(), (), 0, 4).unwrap();
 }
+
+#[no_mangle]
 fn will_panic() {
     static CNT: AtomicUsize = AtomicUsize::new(0);
 
     // Every time the task runs we increment it by 1.
     let cnt = CNT.fetch_add(1, Ordering::SeqCst);
-    hprintln!("will_panic {}", cnt);
     if cnt > 0 {
-        hprintln!("task sleeping {}", cnt);
-        sleep_ms(15000);
+        sleep_ms(20000);
     }
-    hprintln!("task woke up {}", cnt);
-    if cnt < 2 {
-        hprintln!("Panic number: {}", cnt);
+    hprintln!("will_panic {}", cnt);
+
+    if cnt < 4 {
+        let _result = catch_unwind_with_arg(
+            |a| {
+                panic!("hello! {}", a);
+            },
+            cnt,
+        );
         panic!("Panic number: {}", cnt);
     }
 
     hprintln!("panic passed {}", cnt);
-    sleep_ms(10000);
+    semihosting::terminate(true);
 }
 #[handler(USART1)]
 unsafe extern "C" fn usart1_handler() {

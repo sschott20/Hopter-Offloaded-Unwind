@@ -17,6 +17,9 @@ rustflags = [
 
   "-C",
   "codegen-units=1",
+
+  # "-C",
+  # "link-arg=-fsplit-machine-functions",
 ]
 
 [unstable]

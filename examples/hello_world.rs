@@ -22,6 +22,6 @@ fn main(_: cortex_m::Peripherals) {
 #[no_mangle]
 fn say_hello_fn() {
     for i in 0..10 {
-        hprintln!("Hello, world! {}", i);
+        hprintln!("Hello, world! 2 {}", i);
     }
 }

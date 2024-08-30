@@ -152,7 +152,6 @@ impl<'a> UnwindAbility<'a> {
                     return Ok(Self::CantUnwind);
                 }
             };
-
             hprintln!("session established");
 
             // first tell the server that we are handling the extab section
@@ -199,7 +198,6 @@ impl<'a> UnwindAbility<'a> {
                 hprintln!("Error: expected 5 bytes, got {}", size);
             }
             let mut personality_bytes = [0; 5];
-
             let _ = session.receive(&mut personality_bytes, TIMEOUT_MS).unwrap();
 
             let personality = match personality_bytes[0] {
@@ -274,12 +272,6 @@ impl<'a> UnwindAbility<'a> {
 
         let exidx_addr = u32::from_le_bytes(exidx_addr_bytes[0..4].try_into().unwrap());
         hprintln!("exidx_addr: {:x?}", exidx_addr);
-
-        let ex = ExIdxEntry::from_bytes_with_addr(
-            <&[u8; 8]>::try_from(&exidx_entry[0..8]).unwrap(),
-            exidx_addr,
-        )?;
-        hprintln!("server exidx_entry: {:x?}", ex);
 
         match Self::from_bytes(
             <&[u8; 8]>::try_from(&exidx_entry[0..8]).unwrap(),
