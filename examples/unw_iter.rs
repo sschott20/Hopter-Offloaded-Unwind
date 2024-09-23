@@ -1,33 +1,32 @@
 #![no_std]
 #![no_main]
 #![feature(naked_functions)]
-
 extern crate alloc;
-// use alloc::vec;
-// use core::cmp::max;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{
+    panic,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+use hadusos::Session;
+use hopter::{
+    debug::semihosting::dbg_println,
+    task::{self, main},
+    time::sleep_ms,
+    uart::{UsartSerial, UsartTimer, G_UART_MAILBOX, G_UART_RBYTE, G_UART_RX, G_UART_SESSION},
+};
 
-use hadusos::*;
-use hopter::interrupt::handler;
-use hopter::unwind::unw_catch::catch_unwind_with_arg;
-// use hopter::sync::Mailbox;
-// use hopter::unwind::unw_table::{UnwindByteIter, UnwindInstrIter};
-use hopter::{schedule, time::*};
-// use postcard::from_bytes;
-// use hopter::unwind::*;
-use hopter::uart::*;
-use hopter::{boot::main, debug::semihosting, hprintln};
-// use stm32f4xx_hal::pac::USART1;
+use hopter_proc_macro::handler;
 use stm32f4xx_hal::prelude::*;
 use stm32f4xx_hal::uart::Config;
-// use stm32f4xx_hal::uart::{Rx, Tx};
 
-// fn new_byte_slice(size: usize) -> Box<[u8]> {
-//     vec![0; size].into_boxed_slice()
-// }
-
+// Attribute `#[main]` marks the function as the entry function for the main
+// task. The function name can be arbitrary. The main function should accept
+// one argument which is the Cortex-M core peripherals.
 #[main]
 fn main(_: cortex_m::Peripherals) {
+    // Start a task running the `will_panic` function.
+    // The task is restartable. When the panic occurs, the task's stack will be
+    // unwound, and the task will be restarted.
+
     // for remote unwinder to work, this section must be executed before any other code
     let dp = unsafe { stm32f4xx_hal::pac::Peripherals::steal() };
     let clocks = dp.RCC.constrain().cfgr.freeze();
@@ -55,39 +54,40 @@ fn main(_: cortex_m::Peripherals) {
     }
 
     unsafe { cortex_m::peripheral::NVIC::unmask(stm32f4xx_hal::pac::Interrupt::USART1) };
-    hprintln!("Starting");
+    dbg_println!("Starting");
     let usart_serial = UsartSerial { tx };
     let usart_timer = UsartTimer {};
     let session: Session<UsartSerial, UsartTimer, 150, 2> = Session::new(usart_serial, usart_timer);
+
     unsafe { G_UART_SESSION = Some(session) };
 
     // now we can panic and get restarted
-    schedule::start_restartable_task(2, |_| will_panic(), (), 0, 4).unwrap();
+    task::build()
+        .set_entry(will_panic)
+        .spawn_restartable()
+        .unwrap();
 }
 
-#[no_mangle]
 fn will_panic() {
+    // A persistent counter.
     static CNT: AtomicUsize = AtomicUsize::new(0);
 
     // Every time the task runs we increment it by 1.
     let cnt = CNT.fetch_add(1, Ordering::SeqCst);
-    if cnt > 0 {
-        sleep_ms(20000);
-    }
-    hprintln!("will_panic {}", cnt);
 
-    if cnt < 4 {
-        let _result = catch_unwind_with_arg(
-            |a| {
-                panic!("hello! {}", a);
-            },
-            cnt,
-        );
-        panic!("Panic number: {}", cnt);
+    dbg_println!("Current count: {}", cnt);
+    if cnt == 0 {
+        dbg_println!("Panic now!");
+        panic!();
     }
-
-    hprintln!("panic passed {}", cnt);
+    // sleep_ms(15000);
+    #[cfg(feature = "qemu")]
     semihosting::terminate(true);
+    #[cfg(not(feature = "qemu"))]
+    {
+        dbg_println!("test complete!");
+        loop {}
+    }
 }
 #[handler(USART1)]
 unsafe extern "C" fn usart1_handler() {
@@ -95,8 +95,6 @@ unsafe extern "C" fn usart1_handler() {
         unsafe {
             let _ = G_UART_RBYTE.push_back(G_UART_RX.as_mut().unwrap().read().unwrap());
         };
-        // hprintln!("{}", G_RBYTE.len());
-        // hprintln!("Interrupt");
         // Notify the mailbox that a byte is available to read by incrementing the counter
         G_UART_MAILBOX.notify_allow_isr();
     });

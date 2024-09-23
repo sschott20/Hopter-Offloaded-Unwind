@@ -15,7 +15,7 @@ extern crate alloc;
 mod allocator;
 mod assembly;
 mod boot;
-mod schedule;
+pub mod schedule;
 mod unrecoverable;
 
 pub mod config;

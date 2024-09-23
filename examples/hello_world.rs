@@ -14,6 +14,7 @@ use hopter::{
 fn main(_: cortex_m::Peripherals) {
     // Print via semihosting. When using QEMU with semihosting option enabled,
     // the characters will appear on the QEMU console.
+    // dbg_println!("Hello, world!");
     say_hello_fn();
 
     // When running with QEMU, this will cause the QEMU process to terminate.
@@ -22,9 +23,8 @@ fn main(_: cortex_m::Peripherals) {
     semihosting::terminate(true);
 }
 
-#[no_mangle]
 fn say_hello_fn() {
-    for i in 0..10 {
-        hprintln!("Hello, world! 2 {}", i);
+    for _ in 0..5 {
+        dbg_println!("Hello, world! {:i}");
     }
 }
