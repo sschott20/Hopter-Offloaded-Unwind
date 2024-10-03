@@ -1,0 +1,10 @@
+name: Run Tests for Interrupt
+
+on: [workflow_call]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unwind:
+    uses: ./.github/workflows/interrupt-unwind.yaml

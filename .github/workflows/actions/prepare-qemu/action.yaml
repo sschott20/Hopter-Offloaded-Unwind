@@ -1,0 +1,29 @@
+name: Prepare QEMU
+description: "Download QEMU and add it to PATH."
+
+runs:
+  using: "composite"
+  steps:
+    - name: Restore QEMU cache
+      id: qemu-cache
+      uses: actions/cache@v4
+      with:
+        path: qemu
+        key: ${{ runner.os }}-qemu
+
+    - name: Download QEMU if not cached
+      if: steps.qemu-cache.outputs.cache-hit != 'true'
+      run: |
+        curl --fail -L \
+             -o qemu.tar.xz \
+             'https://github.com/hopter-project/hopter-compiler-toolchain/releases/download/1.81.0-Patched-2024-09-12/qemu-x86_64-linux.tar.xz'
+      shell: bash
+
+    - name: Decompress QEMU
+      if: steps.qemu-cache.outputs.cache-hit != 'true'
+      run: tar -xf qemu.tar.xz
+      shell: bash
+
+    - name: Add QEMU to search path
+      run: echo "$(pwd)/qemu/bin" >> $GITHUB_PATH
+      shell: bash

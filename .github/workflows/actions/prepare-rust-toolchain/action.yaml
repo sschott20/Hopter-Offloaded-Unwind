@@ -1,0 +1,29 @@
+name: Prepare Rust toolchain
+description: "Download and register Rust compiler toolchain."
+
+runs:
+  using: "composite"
+  steps:
+    - name: Restore Rust compiler toolchain cache
+      id: rust-cache
+      uses: actions/cache@v4
+      with:
+        path: segstk-rust
+        key: ${{ runner.os }}-rust
+
+    - name: Download Rust compiler toolchain if not cached
+      if: steps.rust-cache.outputs.cache-hit != 'true'
+      run: |
+        curl --fail -L \
+             -o rust.tar.xz \
+             'https://github.com/hopter-project/hopter-compiler-toolchain/releases/download/1.81.0-Patched-2024-09-12/240912-rust-x86_64-linux.tar.xz'
+      shell: bash
+
+    - name: Decompress Rust compiler toolchain
+      if: steps.rust-cache.outputs.cache-hit != 'true'
+      run: tar -xf rust.tar.xz
+      shell: bash
+
+    - name: Register Rust compiler toolchain
+      run: rustup toolchain link segstk-rust segstk-rust
+      shell: bash

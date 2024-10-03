@@ -1,0 +1,19 @@
+name: Run Tests for Mailbox and Semaphore
+
+on: [workflow_call]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mailbox:
+    uses: ./.github/workflows/mailbox.yaml
+
+  semaphore:
+    uses: ./.github/workflows/semaphore.yaml
+
+  mutex:
+    uses: ./.github/workflows/mutex.yaml
+
+  channel:
+    uses: ./.github/workflows/channel.yaml

@@ -1,0 +1,19 @@
+name: Run Tests for Task
+
+on: [workflow_call]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  priority:
+    uses: ./.github/workflows/priority.yaml
+
+  unwind:
+    uses: ./.github/workflows/task-unwind.yaml
+
+  segmented_stack:
+    uses: ./.github/workflows/segmented_stack.yaml
+
+  context_switch:
+    uses: ./.github/workflows/context_switch.yaml

@@ -1,0 +1,33 @@
+name: Run Tests for Task Priority
+
+on: [workflow_call]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  reduce_priority:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run test reduce_priority
+        uses: ./.github/workflows/actions/run-test
+        with:
+          category: task
+          sub-category: priority
+          test-name: reduce_priority
+
+  unwind_priority:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run test unwind_priority
+        uses: ./.github/workflows/actions/run-test
+        with:
+          category: task
+          sub-category: priority
+          test-name: unwind_priority

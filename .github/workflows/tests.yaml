@@ -1,0 +1,19 @@
+name: All Test Cases
+
+on: [workflow_call]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sync:
+    uses: ./.github/workflows/sync.yaml
+
+  task:
+    uses: ./.github/workflows/task.yaml
+
+  interrupt:
+    uses: ./.github/workflows/interrupt.yaml
+
+  debug:
+    uses: ./.github/workflows/debug.yaml
