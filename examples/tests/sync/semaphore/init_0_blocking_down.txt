@@ -1,3 +1,0 @@
-attempting to acquire semaphore..
-semaphore released
-semaphore acquired

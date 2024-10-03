@@ -1,2 +1,0 @@
-First run dropped on panic
-Second run completed

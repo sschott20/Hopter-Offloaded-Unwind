@@ -1,3 +1,0 @@
-High priority task executed
-Middle priority task executed
-Low priority task executed

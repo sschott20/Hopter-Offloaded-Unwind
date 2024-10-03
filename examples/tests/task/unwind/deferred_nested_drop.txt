@@ -1,3 +1,0 @@
-Outter drop executed.
-Inner drop executed.
-Task successfully restarted after a deferred forced unwinding.
