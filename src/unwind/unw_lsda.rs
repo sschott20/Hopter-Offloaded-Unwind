@@ -45,7 +45,7 @@ impl<'input, Endian: Endianity> LSDA<EndianSlice<'input, Endian>> {
             function_start_address,
         }
     }
-    pub fn new(data: &'input [u8], endian: Endian, function_start_address: u32) -> Self {
+    pub fn _new(data: &'input [u8], endian: Endian, function_start_address: u32) -> Self {
         LSDA {
             reader: EndianSlice::new(data, endian),
             function_start_address,

@@ -19,6 +19,7 @@ pub static mut G_UART_RX: Option<Rx<USART1>> = None;
 pub static mut G_UART_MAX_SIZE: usize = 0;
 pub static mut G_UART_RBYTE: heapless::Deque<u8, 128> = heapless::Deque::new();
 pub static G_TIMEOUT_MS: u32 = 30000;
+
 #[derive(Debug)]
 pub enum UartError {
     ReadError,

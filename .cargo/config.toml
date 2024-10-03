@@ -1,8 +1,8 @@
 [target.thumbv7em-none-eabihf]
-runner = "qemu-system-arm -machine netduinoplus2 -nographic -semihosting-config enable=on,target=native -kernel"
+# runner = "qemu-system-arm -machine netduinoplus2 -nographic -semihosting-config enable=on,target=native -kernel"
 
 # use this when building for qemu with a connection to a locally hosted server
-# runner = "qemu-system-arm -serial tcp:localhost:4545 -machine netduinoplus2 -nographic -semihosting-config enable=on,target=native -kernel "
+runner = "qemu-system-arm -serial tcp:localhost:4545 -machine netduinoplus2 -nographic -semihosting-config enable=on,target=native -kernel "
 
 
 rustflags = [

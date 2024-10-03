@@ -103,8 +103,8 @@ impl<'a> UnwindAbility<'a> {
         _extab: &'a [u8],
         entry_addr: u32,
     ) -> Result<Self, &'static str> {
-        // let exidx_entry = ExIdxEntry::from_bytes(exidx_entry)?;
         let exidx_entry = ExIdxEntry::from_bytes_with_addr(exidx_entry, entry_addr)?;
+
         // The current function might not support unwinding.
         if !exidx_entry.can_unwind() {
             return Ok(Self::CantUnwind);
@@ -124,11 +124,10 @@ impl<'a> UnwindAbility<'a> {
                 lsda: None,
             }))
 
-        // The unwind instructions should be find in the extab followed
+        // The unwind instructions should be found in the extab followed
         // by an LSDA.
         } else {
             let extab_entry_addr = exidx_entry.get_extab_entry_addr() as usize;
-
             let session = match unsafe { G_UART_SESSION.as_mut() } {
                 Some(s) => s,
                 None => {
@@ -137,16 +136,16 @@ impl<'a> UnwindAbility<'a> {
                     return Ok(Self::CantUnwind);
                 }
             };
+
             #[cfg(feature = "offload_debug")]
             dbg_println!("session established, UnwindAbility::from_bytes");
 
-            // first tell the server that we are handling the extab section
+            // Send an extab request to the server.
             let request_type: u32 = 0xAAAA;
-            let data = request_type.to_le_bytes();
-            let _ = session.send(&data, G_TIMEOUT_MS).unwrap();
-
-            let data = (extab_entry_addr as u32).to_le_bytes();
-            let _ = session.send(&data, G_TIMEOUT_MS).unwrap();
+            let _ = session
+                .send(&request_type.to_le_bytes(), G_TIMEOUT_MS)
+                .unwrap();
+            let _ = session.send(&(extab_entry_addr as u32).to_le_bytes(), G_TIMEOUT_MS).unwrap();
 
             // in order receive:
             // 1. The bytes of the ExTabEntry.UnwindInstrIter.UnwindByteIter.bytes (needs to be stepped once)
@@ -159,6 +158,7 @@ impl<'a> UnwindAbility<'a> {
                 .receive(&mut extab_entry_bytes, G_TIMEOUT_MS)
                 .unwrap();
             let mut unw_byte_iter = UnwindByteIter::from_box(extab_entry_bytes).unwrap();
+
             // need to cycle unw_byte_iter because we lose track of idx between server and MC
             unw_byte_iter.next();
 
@@ -166,7 +166,6 @@ impl<'a> UnwindAbility<'a> {
 
             #[cfg(feature = "offload_debug")]
             dbg_println!("Byte iter d : {:?}", unw_instr_iter);
-            // hprintln!("Byte iter   : {:?}", _extab_entry.get_unw_instr_iter());
 
             // 2. The lsda_slice as bytes
             let size = session.listen(G_TIMEOUT_MS).unwrap();
@@ -177,8 +176,7 @@ impl<'a> UnwindAbility<'a> {
             let _ = session
                 .receive(&mut lsda_slice_bytes, G_TIMEOUT_MS)
                 .unwrap();
-            // #[cfg(feature = "offload_debug")]
-            // dbg_println!("LSDA slice d : {:?}", lsda_slice_bytes);
+
             let lsda_d = unw_lsda::LSDA::from_box(
                 lsda_slice_bytes,
                 gimli::LittleEndian,
@@ -186,13 +184,11 @@ impl<'a> UnwindAbility<'a> {
             );
             #[cfg(feature = "offload_debug")]
             dbg_println!("LSDA d : {:?}", lsda_d);
-            // hprintln!("LSDA   : {:?}", _lsda);
+
             // 3. The personality as u32, assume always be generic
             let size = session.listen(G_TIMEOUT_MS).unwrap();
-            if size != 5 {
-                #[cfg(feature = "offload_debug")]
-                dbg_println!("Error: expected 5 bytes, got {}", size);
-            }
+            assert!(size == 5);
+
             let mut personality_bytes = [0; 5];
             let _ = session
                 .receive(&mut personality_bytes, G_TIMEOUT_MS)
@@ -233,7 +229,7 @@ impl<'a> UnwindAbility<'a> {
         &mut self,
         pc: u32,
         _exidx: &'a [u8],
-        extab: &'a [u8],
+        _extab: &'a [u8],
     ) -> Result<(), &'static str> {
         let session = match unsafe { G_UART_SESSION.as_mut() } {
             Some(s) => s,
@@ -245,18 +241,17 @@ impl<'a> UnwindAbility<'a> {
         };
         #[cfg(feature = "offload_debug")]
         dbg_println!("pc: {:x?}", pc);
-        // hprintln!("exidx bytes: {:?}", exidx);
 
         // send the request type, 0xBBBB for exidx
         let request_type: u32 = 0xBBBB;
         let data = request_type.to_le_bytes();
-        let result = session.send(&data, G_TIMEOUT_MS);
+        let _ = session.send(&data, G_TIMEOUT_MS);
 
         // send the current pc
         let data = pc.to_le_bytes();
         let _ = session.send(&data, G_TIMEOUT_MS).unwrap();
 
-        // receive the correct exidx slice
+        // receive the exidx slice
         let size = session.listen(G_TIMEOUT_MS).unwrap();
         let mut exidx_entry = vec![0; size as usize].into_boxed_slice();
         let _ = session.receive(&mut exidx_entry, G_TIMEOUT_MS).unwrap();
@@ -269,12 +264,13 @@ impl<'a> UnwindAbility<'a> {
             .unwrap();
 
         let exidx_addr = u32::from_le_bytes(exidx_addr_bytes[0..4].try_into().unwrap());
+
         #[cfg(feature = "offload_debug")]
         dbg_println!("exidx_addr: {:x?}", exidx_addr);
 
         match Self::from_bytes(
             <&[u8; 8]>::try_from(&exidx_entry[0..8]).unwrap(),
-            extab,
+            _extab,
             exidx_addr,
         ) {
             Ok(s) => {
@@ -283,8 +279,6 @@ impl<'a> UnwindAbility<'a> {
             }
             Err(e) => return Err(e),
         };
-
-        // send pc and get back the exidx slice
     }
 }
 
@@ -1207,7 +1201,7 @@ unsafe fn panic(_info: &PanicInfo) -> ! {
 }
 
 /// Return the `.ARM.exidx` section as a static byte slice.
-fn get_exidx() -> &'static [u8] {
+fn _get_exidx() -> &'static [u8] {
     extern "C" {
         // These symbols come from `link.ld`
         static __sarm_exidx: u32;
@@ -1233,7 +1227,7 @@ fn get_exidx() -> &'static [u8] {
 }
 
 /// Return the `.ARM.extab` section as a static byte slice.
-fn get_extab() -> &'static [u8] {
+fn _get_extab() -> &'static [u8] {
     // #[cfg(feature = "offload_unwind")]
     // {
     //     dbg_println!("get_extab()");

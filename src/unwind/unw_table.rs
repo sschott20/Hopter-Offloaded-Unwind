@@ -26,6 +26,7 @@ pub struct Prel31 {
 
 impl Prel31 {
     /// Construct a prel31 offset from little-endian bytes.
+    #[allow(dead_code)]
     pub fn from_bytes(bytes: &[u8; 4]) -> Self {
         Prel31 {
             offset_raw: i32::from_le_bytes(*bytes),
@@ -132,7 +133,7 @@ impl<'a> ExIdxEntry {
     /// Construct a new exidx entry from raw bytes. Note that we must read
     /// the .ARM.exidx section in place without any data copy, because
     /// prel31 offset is relative to the address of itself.
-    pub fn from_bytes(bytes: &'a [u8; 8]) -> Result<Self, &'static str> {
+    pub fn _from_bytes(bytes: &'a [u8; 8]) -> Result<Self, &'static str> {
         // Make sure we don't copy anything, just manipulating types.
         let func_offset = Prel31::from_bytes(
             <&[u8; 4]>::try_from(&bytes[0..4])
@@ -448,6 +449,7 @@ impl<'a> UnwindInstrIter {
 /// followed by a sequence of unwind instructions, and then optionally
 /// a LSDA (language specific data area). This structure only deals with
 /// the language agnostic part, deferring parsing the LSDA to other module.
+#[allow(dead_code)]
 pub struct ExTabEntry {
     /// The personality routine. Can be either the compact model
     /// or the generic model.
@@ -467,7 +469,7 @@ impl<'a> ExTabEntry {
     ///
     /// Reference implementation:
     /// <https://github.com/libunwind/libunwind/blob/e07b43c02d/src/arm/Gex_tables.c>
-    pub fn from_bytes(
+    pub fn _from_bytes(
         extab: &'a [u8],
         entry_offset: usize,
     ) -> Result<(Self, &'a [u8]), &'static str> {
@@ -558,12 +560,12 @@ impl<'a> ExTabEntry {
     }
 
     // Get the personality function.
-    pub fn get_personality(&self) -> PersonalityType {
+    pub fn _get_personality(&self) -> PersonalityType {
         self.personality.clone()
     }
 
     // Get the unwind instruction iterator.
-    pub fn get_unw_instr_iter(&self) -> UnwindInstrIter {
+    pub fn _get_unw_instr_iter(&self) -> UnwindInstrIter {
         self.unw_instr_iter.clone()
     }
 }

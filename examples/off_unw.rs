@@ -77,15 +77,12 @@ fn will_panic() {
 
     dbg_println!("Current count: {}", cnt);
 
-    if cnt > 0 {
-        sleep_ms(15000);
-    }
     // Panic and get restarted for 5 times.
-    if cnt < 3 {
+    if cnt == 0 {
         dbg_println!("Panic now!");
         panic!();
     }
-    sleep_ms(15000);
+    let _ = sleep_ms(35000);
     dbg_println!("Finished");
 
     // When running with QEMU, this will cause the QEMU process to terminate.
