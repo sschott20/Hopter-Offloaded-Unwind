@@ -9,13 +9,15 @@ readme = "README.md"
 categories = ["embedded", "no-std"]
 
 [features]
-default = ["unwind"]
+default = ["unwind", "offload_debug"]
 # Enable unwinding to clean up panicked tasks.
 unwind = ["dep:gimli", "dep:fallible-iterator"]
 # Print the program counter (PC) of each function in the unwound stack.
 unwind_print_trace = ["unwind"]
 # Verbose stack unwinder execution log message.
 unwind_debug = ["unwind"]
+offload_unwind = ["unwind"]
+offload_debug = ["offload_unwind"]
 
 # Supported boards in STM32F4 family.
 stm32f401 = ["hopter_proc_macro/stm32f401", "stm32f4xx-hal/stm32f401"]
@@ -41,6 +43,7 @@ int-enum = "1.1"
 cortex-m-semihosting = "0.5"
 concat-idents = "1.0"
 paste = "1.0"
+hadusos = "0.2.1"
 
 [dependencies.stable_deref_trait]
 version = "1.2.0"
@@ -79,7 +82,7 @@ features = ["nightly"]
 [dev-dependencies]
 nb = "1.1"
 
-[dev-dependencies.stm32f4xx-hal]
+[dependencies.stm32f4xx-hal]
 version = "0.21.0"
 default-features = false
 

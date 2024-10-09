@@ -16,6 +16,9 @@ use core::{fmt::Formatter, ops::Range};
 use fallible_iterator::FallibleIterator;
 use gimli::{constants::*, DwEhPe, EndianSlice, Endianity, Reader};
 
+#[cfg(feature = "offload_unwind")]
+use alloc::boxed::Box;
+
 /// `LSDA` contains the contents of the Language-Specific Data Area (LSDA)
 /// that is used to locate cleanup (run destructors for) a given function
 /// during stack unwinding.
@@ -37,6 +40,14 @@ impl<'input, Endian: Endianity> LSDA<EndianSlice<'input, Endian>> {
     /// must also be provided, because this is often used as the default
     /// base address for the landing pad from which all offsets are calculated.
     pub fn new(data: &'input [u8], endian: Endian, function_start_address: u32) -> Self {
+        LSDA {
+            reader: EndianSlice::new(data, endian),
+            function_start_address,
+        }
+    }
+    pub fn from_box(data: Box<[u8]>, endian: Endian, function_start_address: u32) -> Self {
+        // let data: Vec<u8> = data.into_vec();
+        let data: &'static [u8] = Box::leak(data);
         LSDA {
             reader: EndianSlice::new(data, endian),
             function_start_address,

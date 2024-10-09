@@ -83,6 +83,7 @@ pub mod interrupt;
 pub mod sync;
 pub mod task;
 pub mod time;
-
+#[cfg(feature = "offload_unwind")]
+pub mod uart;
 #[doc(hidden)]
 pub mod unwind;

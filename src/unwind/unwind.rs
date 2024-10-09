@@ -30,12 +30,20 @@
 //!
 //! The implementation is inspired by `libunwind` and Theseus OS's unwinder.
 
+#[cfg(feature = "offload_unwind")]
+use super::unw_table::{OffExIdxEntry, OffUnwindByteIter, OffUnwindInstrIter};
+
 use super::{
     unw_lsda::{self, LSDA},
     unw_table::{
         ExIdxEntry, ExTabEntry, PersonalityType, Prel31, UnwindInstrIter, UnwindInstruction,
     },
 };
+#[cfg(feature = "offload_unwind")]
+use crate::uart::{G_TIMEOUT_MS, G_UART_SESSION};
+#[cfg(feature = "offload_unwind")]
+use alloc::vec;
+
 use crate::{
     config,
     interrupt::{
@@ -62,7 +70,11 @@ use core::{
 };
 use gimli::{EndianSlice, LittleEndian};
 
-#[cfg(any(feature = "unwind_debug", feature = "unwind_print_trace"))]
+#[cfg(any(
+    feature = "unwind_debug",
+    feature = "unwind_print_trace",
+    feature = "offload_debug"
+))]
 use crate::debug::semihosting::dbg_println;
 
 /// If a stack frame can be unwound, its `UnwindInfo` describes how to unwind.
@@ -76,7 +88,7 @@ pub struct UnwindInfo<'a> {
     /// personality routine.
     personality: PersonalityType,
     /// The iterator that yields unwind instructions to restore register values.
-    unw_instr_iter: UnwindInstrIter<'a>,
+    unw_instr_iter: OffUnwindInstrIter,
     /// The LSDA describing the cleanup routines and exception catch blocks.
     /// Compact model that embeds the unwind instructions into the
     /// exidx entry does not have LSDA, thus the field is optional.
@@ -92,13 +104,24 @@ pub enum UnwindAbility<'a> {
 }
 
 impl<'a> UnwindAbility<'a> {
+    /// Offloaded version of UnwindAbility::from_bytes.
     /// Return the unwind-ability from raw bytes.
     /// Arguments:
     /// - `exidx_entry` is the reference to a 2-word entry in the `.ARM.exidx` section.
     /// - `extab` is the slice of the whole `.ARM.extab` section.
-    fn from_bytes(exidx_entry: &'a [u8; 8], extab: &'a [u8]) -> Result<Self, &'static str> {
-        let exidx_entry = ExIdxEntry::from_bytes(exidx_entry)?;
+    fn from_bytes_off(
+        exidx_entry: &[u8; 8],
+        extab: &'a [u8],
+        entry_addr: u32,
+    ) -> Result<Self, &'static str> {
+        let exidx_entry = OffExIdxEntry::from_bytes_with_addr(exidx_entry, entry_addr)?;
 
+        #[cfg(feature = "offload_debug")]
+        {
+            dbg_println!("\nfrom_bytes_off debug");
+            dbg_println!("exidx_entry: {:x?}", exidx_entry);
+            dbg_println!("entry_addr: 0x{:x}", entry_addr);
+        }
         // The current function might not support unwinding.
         if !exidx_entry.can_unwind() {
             return Ok(Self::CantUnwind);
@@ -111,12 +134,147 @@ impl<'a> UnwindAbility<'a> {
             let personality = exidx_entry.get_personality();
             let instrs = exidx_entry.get_unw_instr_iter();
 
+            #[cfg(feature = "offload_debug")]
+            {
+                dbg_println!("\nfrom_bytes_off debug compact");
+                dbg_println!("func_addr: 0x{:x}", func_addr);
+                dbg_println!("personality: {:?}", personality);
+                dbg_println!("instrs: {:?}", instrs);
+                dbg_println!("lsda: None");
+            }
+
             Ok(Self::CanUnwind(UnwindInfo {
                 func_addr,
                 personality,
                 unw_instr_iter: instrs,
                 lsda: None,
             }))
+
+        // The unwind instructions should be found in the extab followed
+        // by an LSDA.
+        } else {
+            let extab_entry_addr = exidx_entry.get_extab_entry_addr() as usize;
+            let session = match unsafe { G_UART_SESSION.as_mut() } {
+                Some(s) => s,
+                None => {
+                    #[cfg(feature = "offload_debug")]
+                    dbg_println!("No session");
+                    return Ok(Self::CantUnwind);
+                }
+            };
+
+            // Send an extab request to the server.
+            let request_type: u32 = 0xAAAA;
+            let _ = session
+                .send(&request_type.to_le_bytes(), G_TIMEOUT_MS)
+                .unwrap();
+            let _ = session
+                .send(&(extab_entry_addr as u32).to_le_bytes(), G_TIMEOUT_MS)
+                .unwrap();
+
+            // in order receive:
+            // 1. The bytes of the ExTabEntry.UnwindInstrIter.UnwindByteIter.bytes (needs to be stepped once)
+            // 2. The lsda_slice as bytes
+            // 3. The personality as u32, with extra byte for generic vs compact
+            let size = session.listen(G_TIMEOUT_MS).unwrap();
+            let mut extab_entry_bytes = vec![0; size as usize].into_boxed_slice();
+
+            let _ = session
+                .receive(&mut extab_entry_bytes, G_TIMEOUT_MS)
+                .unwrap();
+            let mut unw_byte_iter = OffUnwindByteIter::from_box(extab_entry_bytes).unwrap();
+
+            // need to cycle unw_byte_iter because we lose track of idx between server and MC
+            unw_byte_iter.next();
+
+            let unw_instr_iter = OffUnwindInstrIter::from_byte_iter(unw_byte_iter);
+
+            // 2. The lsda_slice as bytes
+            let size = session.listen(G_TIMEOUT_MS).unwrap();
+            let mut lsda_slice_bytes = vec![0; size as usize].into_boxed_slice();
+
+            let _ = session
+                .receive(&mut lsda_slice_bytes, G_TIMEOUT_MS)
+                .unwrap();
+
+            let lsda_d = LSDA::from_box(
+                lsda_slice_bytes,
+                gimli::LittleEndian,
+                exidx_entry.get_func_addr(),
+            );
+
+            // 3. The personality as u32, assume always be generic
+            let size = session.listen(G_TIMEOUT_MS).unwrap();
+            assert!(size == 5);
+
+            let mut personality_bytes = [0; 5];
+            let _ = session
+                .receive(&mut personality_bytes, G_TIMEOUT_MS)
+                .unwrap();
+
+            let personality = match personality_bytes[0] {
+                0xAA => {
+                    let p = u32::from_le_bytes(personality_bytes[1..5].try_into().unwrap());
+                    PersonalityType::Compact(p as u8)
+                }
+                0xBB => {
+                    let p = u32::from_le_bytes(personality_bytes[1..5].try_into().unwrap());
+                    PersonalityType::Generic(p)
+                }
+                _ => panic!("Personality type not supported"),
+            };
+
+            #[cfg(feature = "offload_debug")]
+            {
+                dbg_println!("\nfrom_bytes_off debug");
+                dbg_println!("func_addr: 0x{:x}", exidx_entry.get_func_addr());
+                dbg_println!("personality: {:?}", personality);
+                dbg_println!("instrs: {:?}", unw_instr_iter);
+                dbg_println!("lsda: {:?}", lsda_d);
+            }
+            Ok(Self::CanUnwind(UnwindInfo {
+                func_addr: exidx_entry.get_func_addr(),
+                lsda: Some(lsda_d),
+                personality: personality,
+                unw_instr_iter: unw_instr_iter,
+            }))
+        }
+    }
+
+    /// Return the unwind-ability from raw bytes.
+    /// Arguments:
+    /// - `exidx_entry` is the reference to a 2-word entry in the `.ARM.exidx` section.
+    /// - `extab` is the slice of the whole `.ARM.extab` section.
+    fn from_bytes_check(exidx_entry: &[u8; 8], extab: &'a [u8]) -> Result<(), &'static str> {
+        let exidx_entry = ExIdxEntry::from_bytes(exidx_entry)?;
+
+        #[cfg(feature = "offload_debug")]
+        {
+            dbg_println!("\nfrom_bytes_check debug");
+            dbg_println!("exidx_entry: {:x?}", exidx_entry);
+        }
+
+        // The current function might not support unwinding.
+        if !exidx_entry.can_unwind() {
+            return Ok(());
+        }
+
+        // If the unwind instructions are embedded into the exidx entry,
+        // then we have no LSDA.
+        if exidx_entry.is_compact() {
+            let func_addr = exidx_entry.get_func_addr();
+            let personality = exidx_entry.get_personality();
+            let instrs = exidx_entry.get_unw_instr_iter();
+
+            #[cfg(feature = "offload_debug")]
+            {
+                dbg_println!("\nfrom_bytes_check debug compact");
+                dbg_println!("func_addr: 0x{:x}", func_addr);
+                dbg_println!("personality: {:?}", personality);
+                dbg_println!("instrs: {:?}", instrs);
+                dbg_println!("lsda: None");
+            }
+            return Ok(());
 
         // The unwind instructions should be find in the extab followed
         // by an LSDA.
@@ -128,13 +286,90 @@ impl<'a> UnwindAbility<'a> {
             let lsda =
                 unw_lsda::LSDA::new(lsda_slice, gimli::LittleEndian, exidx_entry.get_func_addr());
 
-            Ok(Self::CanUnwind(UnwindInfo {
-                func_addr: exidx_entry.get_func_addr(),
-                personality: extab_entry.get_personality(),
-                unw_instr_iter: extab_entry.get_unw_instr_iter(),
-                lsda: Some(lsda),
-            }))
+            #[cfg(feature = "offload_debug")]
+            {
+                dbg_println!("\nfrom_bytes_check debug normal");
+                dbg_println!("func_addr: 0x{:x}", exidx_entry.get_func_addr());
+                dbg_println!("personality: {:?}", exidx_entry.get_personality());
+                dbg_println!("instrs: {:?}", extab_entry.get_unw_instr_iter());
+                dbg_println!("lsda: None");
+            }
+
+            return Ok(());
         }
+    }
+
+    /// Offloaded version of the get_for_pc method.
+    /// Find and update the `UnwindAbility` for a function indicated by `pc`.
+    /// The method updates `self`.
+    /// Arguments:
+    /// - `pc` is an address inside a function.
+    /// - `exidx` is the slice of the whole `.ARM.exidx` section.
+    /// - `extab` is the slice of the whole `.ARM.extab` section.
+    /// Returns `Err(..)` if anything goes wrong. Otherwise `Ok(())`.
+    pub fn get_for_pc_off(
+        &mut self,
+        pc: u32,
+        exidx: &'a [u8],
+        extab: &'a [u8],
+    ) -> Result<(), &'static str> {
+        let session = match unsafe { G_UART_SESSION.as_mut() } {
+            Some(s) => s,
+            None => {
+                #[cfg(feature = "offload_debug")]
+                dbg_println!("No session");
+                return Ok(());
+            }
+        };
+
+        // send the request type, 0xBBBB for exidx
+        let request_type: u32 = 0xBBBB;
+        let data = request_type.to_le_bytes();
+        let _ = session.send(&data, G_TIMEOUT_MS);
+
+        // send the current pc
+        let data = pc.to_le_bytes();
+        let _ = session.send(&data, G_TIMEOUT_MS).unwrap();
+
+        // receive the exidx slice
+        let size = session.listen(G_TIMEOUT_MS).unwrap();
+        let mut exidx_entry = vec![0; size as usize].into_boxed_slice();
+        let _ = session.receive(&mut exidx_entry, G_TIMEOUT_MS).unwrap();
+
+        // receive the intended memory address of the exidx slice
+        let size = session.listen(G_TIMEOUT_MS).unwrap();
+        let mut exidx_addr_bytes = vec![0; size as usize].into_boxed_slice();
+        let _ = session
+            .receive(&mut exidx_addr_bytes, G_TIMEOUT_MS)
+            .unwrap();
+
+        let exidx_addr = u32::from_le_bytes(exidx_addr_bytes[0..4].try_into().unwrap());
+
+        #[cfg(feature = "offload_debug")]
+        {
+            dbg_println!(
+                "\nget_for_pc_offload: {:x?}",
+                <&[u8; 8]>::try_from(&exidx_entry[0..8]).unwrap()
+            );
+            dbg_println!("exidx_addr: 0x{:x}", exidx_addr);
+        }
+        #[cfg(feature = "offload_debug")]
+        {
+            let _ =
+                Self::from_bytes_check(<&[u8; 8]>::try_from(&exidx_entry[0..8]).unwrap(), extab);
+        }
+
+        match Self::from_bytes_off(
+            <&[u8; 8]>::try_from(&exidx_entry[0..8]).unwrap(),
+            extab,
+            exidx_addr,
+        ) {
+            Ok(s) => {
+                *self = s;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
     }
 
     /// Find and update the `UnwindAbility` for a function indicated by `pc`.
@@ -144,7 +379,7 @@ impl<'a> UnwindAbility<'a> {
     /// - `exidx` is the slice of the whole `.ARM.exidx` section.
     /// - `extab` is the slice of the whole `.ARM.extab` section.
     /// Returns `Err(..)` if anything goes wrong. Otherwise `Ok(())`.
-    pub fn get_for_pc(
+    pub fn get_for_pc_check(
         &mut self,
         pc: u32,
         exidx: &'a [u8],
@@ -170,16 +405,12 @@ impl<'a> UnwindAbility<'a> {
         let last_pc =
             Prel31::from_bytes(<&'a [u8; 4]>::try_from(&exidx[last..last + 4]).unwrap_or_die());
         if pc >= last_pc.value() {
-            match Self::from_bytes(
-                <&'a [u8; 8]>::try_from(&exidx[last..last + 8]).unwrap_or_die(),
-                extab,
-            ) {
-                Ok(s) => {
-                    *self = s;
-                    return Ok(());
-                }
-                Err(e) => return Err(e),
-            };
+            dbg_println!(
+                "\nget_for_pc_check: {:x?}",
+                <&'a [u8; 8]>::try_from(&exidx[last..last + 8]).unwrap_or_die()
+            );
+            dbg_println!("exidx_addr': {:x}", exidx.as_ptr() as usize + last);
+            return Ok(());
         }
 
         // Perform binary search.
@@ -194,16 +425,12 @@ impl<'a> UnwindAbility<'a> {
             }
         }
 
-        match Self::from_bytes(
-            <&'a [u8; 8]>::try_from(&exidx[first..first + 8]).unwrap_or_die(),
-            extab,
-        ) {
-            Ok(s) => {
-                *self = s;
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        };
+        dbg_println!(
+            "\nget_for_pc_check: {:x?}",
+            <&'a [u8; 8]>::try_from(&exidx[first..first + 8]).unwrap_or_die()
+        );
+        dbg_println!("exidx_addr: 0x{:x}", exidx.as_ptr() as usize + first);
+        return Ok(());
     }
 }
 
@@ -558,9 +785,17 @@ impl UnwindState<'static> {
         // the unwinder is invoked.
         let exidx = get_exidx();
         let extab = get_extab();
+
+        #[cfg(feature = "offload_debug")]
+        let _ = unw_state.unw_ability.get_for_pc_check(
+            unw_state.gp_regs[ARMGPReg::PC] as u32,
+            exidx,
+            extab,
+        );
+
         unw_state
             .unw_ability
-            .get_for_pc(unw_state.gp_regs[ARMGPReg::PC] as u32, exidx, extab)
+            .get_for_pc_off(unw_state.gp_regs[ARMGPReg::PC] as u32, exidx, extab)
             .unwrap_or_die();
 
         // Set the stacklet boundary field. It should be the boundary before
@@ -747,8 +982,16 @@ impl<'a> UnwindState<'a> {
         // Update unwind ability information.
         let exidx = get_exidx();
         let extab = get_extab();
+
+        #[cfg(feature = "offload_debug")]
+        {
+            let _ =
+                self.unw_ability
+                    .get_for_pc_check(self.gp_regs[ARMGPReg::PC] as u32, exidx, extab);
+        }
+
         self.unw_ability
-            .get_for_pc(self.gp_regs[ARMGPReg::PC] as u32, exidx, extab)?;
+            .get_for_pc_off(self.gp_regs[ARMGPReg::PC] as u32, exidx, extab)?;
 
         Ok(())
     }
@@ -1143,6 +1386,8 @@ fn get_exidx() -> &'static [u8] {
         );
 
         let len = end.byte_offset_from(start) as usize;
+        dbg_println!("\nstart : {:?}, end: {:?}, len: {:x?}", start, end, len);
+        // dbg_println!("\nfull exidx: {:x?}", slice::from_raw_parts(start, len));
         slice::from_raw_parts(start, len)
     }
 }

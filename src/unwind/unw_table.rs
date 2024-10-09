@@ -2,8 +2,12 @@
 //! stored in `.ARM.exidx` and `.ARM.extab` section. It follows the ARM official
 //! document: Exception Handling ABI for the Arm Architecture. The chapters
 //! mentioned in below comments all refer to this document.
+#[cfg(feature = "offload_debug")]
+use crate::debug::semihosting::dbg_println;
 
 use crate::unrecoverable::{self, Lethal};
+#[cfg(feature = "offload_unwind")]
+use alloc::boxed::Box;
 
 /// Prel31 offset is a position relative pointer. The value represented
 /// by a prel31 offset is *the address of the prel31 data itself plus
@@ -25,12 +29,27 @@ pub struct Prel31 {
 impl Prel31 {
     /// Construct a prel31 offset from little-endian bytes.
     pub fn from_bytes(bytes: &[u8; 4]) -> Self {
+        // #[cfg(feature = "offload_debug")]
+        // {
+        //     dbg_println!("\nPrel31::from_bytes: bytes: {:x?}", bytes);
+        //     dbg_println!("Prel31::from_bytes: &bytes[0]: {:x?}",  &bytes[0] as *const _ as u32);
+        // }
         Prel31 {
             offset_raw: i32::from_le_bytes(*bytes),
             self_addr: &bytes[0] as *const _ as u32,
         }
     }
-
+    /// Construct a prel31 offset from little-endian bytes without using the address of the bytes
+    pub fn from_bytes_with_addr(bytes: &[u8; 4], addr: u32) -> Self {
+        // #[cfg(feature = "offload_debug")]
+        // {
+        //     dbg_println!("\nPrel31::from_bytes_with_addr: bytes: {:x?}, addr: {:x}", bytes, addr);
+        // }
+        Prel31 {
+            offset_raw: i32::from_le_bytes(*bytes),
+            self_addr: addr,
+        }
+    }
     /// Get the address it points to.
     pub fn value(&self) -> u32 {
         self.self_addr.wrapping_add(self.offset_value() as u32)
@@ -51,6 +70,58 @@ impl Prel31 {
     /// calculation.
     pub fn is_msb_set(&self) -> bool {
         (self.offset_raw as u32 & 0x8000_0000) != 0
+    }
+}
+
+/// The type of an exidx entry. There are three variants.
+/// Document chapter 6 (Index table entries).
+#[derive(Debug)]
+enum OffExIdxEntryContent {
+    /// The generic variant. The value should be read as a
+    /// prel31 offset. We store the decoded address here.
+    ExTabEntryAddr(u32),
+
+    /// The compact variant. Bit 31 must be 1. Bits [27:24]
+    /// indicate the compact module personality routine number.
+    /// Bits [23:16], [15:8], [7:0] are the data for the personality
+    /// routine. In reality they are ARM unwind instructions.
+    /// Other bits are reserved.
+    Compact(PersonalityType, OffUnwindInstrIter),
+
+    /// The 0x0000_0001 bit pattern, indicating that this
+    /// function cannot unwind. No unwind instruction is
+    /// present for this function.
+    CantUnwind,
+}
+
+impl<'a> OffExIdxEntryContent {
+    /// Extract the exidx entry type from a prel31 offset.
+    fn from_raw(prel31: Prel31, bytes: &'a [u8; 4]) -> Self {
+        // If the raw pattern is 0x0000_0001, then can't unwind.
+        if prel31.raw() == 0x1 {
+            return Self::CantUnwind;
+        }
+
+        // If the most significant bit is set, this is the compact model.
+        if prel31.is_msb_set() {
+            // Bits [27:24] are the personality routine selector.
+            let pers_sel = (((prel31.raw() & 0x0f_00_00_00) as u32) >> 24) as u8;
+
+            // Create the byte iterator over the other 3 bytes. The `from_bytes` method
+            // requires the slice to have a length of a multiple of 4. Thus, we create
+            // the iterator from the full 4-byte slice and immediately skip the first byte.
+            let mut byte_iter = OffUnwindByteIter::from_bytes(&bytes[..]).unwrap_or_die();
+            byte_iter.next();
+
+            // Adapt the byte iterator into unwind instruction iterator.
+            let unw_instr_iter = OffUnwindInstrIter::from_byte_iter(byte_iter);
+
+            return Self::Compact(PersonalityType::Compact(pers_sel), unw_instr_iter);
+        }
+
+        // Otherwise, this is the generic version. We decode the address
+        // pointing to the extab.
+        return Self::ExTabEntryAddr(prel31.value());
     }
 }
 
@@ -103,6 +174,124 @@ impl<'a> ExIdxEntryContent<'a> {
         // Otherwise, this is the generic version. We decode the address
         // pointing to the extab.
         return Self::ExTabEntryAddr(prel31.value());
+    }
+}
+
+/// An exidx entry. Each entry in the exidx section consists of two 32-bit
+/// words. The first word is a prel31 offset to a function. The other is the
+/// compound content. Entries are sorted according to the function address in
+/// the exidx section.
+#[derive(Debug)]
+pub struct OffExIdxEntry {
+    /// The corresponding function address. We store the decoded address
+    /// here rather than the raw prel31 offset.
+    func_addr: u32,
+
+    /// The content enum. It has three variants.
+    content: OffExIdxEntryContent,
+}
+impl<'a> OffExIdxEntry {
+    /// Construct a new exidx entry from raw bytes. Note that we must read
+    /// the .ARM.exidx section in place without any data copy, because
+    /// prel31 offset is relative to the address of itself.
+    pub fn from_bytes(bytes: &'a [u8; 8]) -> Result<Self, &'static str> {
+        // Make sure we don't copy anything, just manipulating types.
+        let func_offset = Prel31::from_bytes(
+            <&[u8; 4]>::try_from(&bytes[0..4])
+                .map_err(|_| "ExIdxEntry::from_bytes: array reference conversion failed.")
+                .unwrap_or_die(),
+        );
+        let content_bytes_ref = <&[u8; 4]>::try_from(&bytes[4..8])
+            .map_err(|_| "ExIdxEntry::from_bytes: array reference conversion failed.")
+            .unwrap_or_die();
+        let content_prel31 = Prel31::from_bytes(content_bytes_ref);
+
+        // Sanity check. Citing from the document chapter 6:
+        // "The first word contains a prel31 offset to the start
+        // of a function, with bit 31 clear."
+        if func_offset.is_msb_set() {
+            return Err("ExIdxEntry::from_bytes: corrupted entry.");
+        }
+
+        Ok(OffExIdxEntry {
+            func_addr: func_offset.value() as u32,
+            content: OffExIdxEntryContent::from_raw(content_prel31, content_bytes_ref),
+        })
+    }
+    pub fn from_bytes_with_addr(bytes: &'a [u8; 8], addr: u32) -> Result<Self, &'static str> {
+        // Make sure we don't copy anything, just manipulating types.
+        let func_offset = Prel31::from_bytes_with_addr(
+            <&[u8; 4]>::try_from(&bytes[0..4])
+                .map_err(|_| "ExIdxEntry::from_bytes: array reference conversion failed.")
+                .unwrap_or_die(),
+            addr,
+        );
+        let content_bytes_ref = <&[u8; 4]>::try_from(&bytes[4..8])
+            .map_err(|_| "ExIdxEntry::from_bytes: array reference conversion failed.")
+            .unwrap_or_die();
+        let content_prel31 = Prel31::from_bytes_with_addr(content_bytes_ref, addr + 4);
+
+        // Sanity check. Citing from the document chapter 6:
+        // "The first word contains a prel31 offset to the start
+        // of a function, with bit 31 clear."
+        if func_offset.is_msb_set() {
+            return Err("ExIdxEntry::from_bytes: corrupted entry.");
+        }
+
+        Ok(OffExIdxEntry {
+            func_addr: func_offset.value() as u32,
+            content: OffExIdxEntryContent::from_raw(content_prel31, content_bytes_ref),
+        })
+    }
+    /// Check if the entry describes a function that can unwind.
+    pub fn can_unwind(&self) -> bool {
+        match self.content {
+            OffExIdxEntryContent::ExTabEntryAddr(_) => true,
+            OffExIdxEntryContent::Compact(_, _) => true,
+            OffExIdxEntryContent::CantUnwind => false,
+        }
+    }
+
+    /// Check if the entry has compact representation.
+    pub fn is_compact(&self) -> bool {
+        if let OffExIdxEntryContent::Compact(..) = self.content {
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the unwind instructions from the compact representation.
+    /// Precondition: `is_compact()` must return true.
+    pub fn get_unw_instr_iter(&self) -> OffUnwindInstrIter {
+        match &self.content {
+            OffExIdxEntryContent::Compact(_, iter) => iter.clone(),
+            _ => unrecoverable::die_with_arg("ExIdxEntry::into_unw_instr_iter: not compact."),
+        }
+    }
+
+    /// Get the the personality function from the compact representation.
+    /// Precondition: `is_compact()` must return true.
+    pub fn get_personality(&self) -> PersonalityType {
+        match &self.content {
+            OffExIdxEntryContent::Compact(pers, _) => pers.clone(),
+            _ => unrecoverable::die_with_arg("ExIdxEntry::get_personality: not compact."),
+        }
+    }
+
+    /// Get the .ARM.extab entry address from the generic representation.
+    /// Precondition: `is_compact()` must return false, `can_unwind` must
+    /// return true.
+    pub fn get_extab_entry_addr(&self) -> u32 {
+        match self.content {
+            OffExIdxEntryContent::ExTabEntryAddr(offset) => offset,
+            _ => unrecoverable::die_with_arg("ExIdxEntry::get_unw_tbl_entry_addr: not generic."),
+        }
+    }
+
+    /// Get the function address represented by this entry.
+    pub fn get_func_addr(&self) -> u32 {
+        self.func_addr
     }
 }
 
@@ -345,6 +534,54 @@ impl UnwindInstruction {
 /// - Inside each word, read from the most significant byte to
 ///   the least significant byte.
 #[derive(Debug, Clone)]
+pub struct OffUnwindByteIter {
+    bytes: Box<[u8]>,
+    pos: usize,
+}
+
+impl<'a> OffUnwindByteIter {
+    /// Create an unwind instruction iterator on its raw byte representation.
+    /// Precondition: the byte length must be a multiple of 4.
+    pub fn from_box(bytes: Box<[u8]>) -> Result<Self, &'static str> {
+        if bytes.len() % 4 != 0 {
+            return Err("UnwindInstrIter::from_bytes: bytes length not a multiple of 4.");
+        }
+        Ok(Self { bytes, pos: 0 })
+    }
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, &'static str> {
+        if bytes.len() % 4 != 0 {
+            return Err("UnwindInstrIter::from_bytes: bytes length not a multiple of 4.");
+        }
+        Ok(Self {
+            bytes: bytes.to_vec().into_boxed_slice(),
+            pos: 0,
+        })
+    }
+}
+
+impl<'a> Iterator for OffUnwindByteIter {
+    type Item = u8;
+
+    /// Advance the iterator and return a byte. At 4-byte word level,
+    /// read from the least significant to the most significant. Inside
+    /// a word, read from the most significant to the least.
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.bytes.len() {
+            return None;
+        }
+        let word_pos = self.pos / 4;
+        let byte_pos = 3 - self.pos % 4;
+        self.pos += 1;
+        Some(self.bytes[word_pos * 4 + byte_pos])
+    }
+}
+/// An iterator on raw bytes of unwind instructions.
+/// ARM defines a weird byte order:
+/// - Bytes are divided into 4-byte words, reading from the least
+///   significant one to the most significant one.
+/// - Inside each word, read from the most significant byte to
+///   the least significant byte.
+#[derive(Debug, Clone)]
 pub struct UnwindByteIter<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -378,6 +615,30 @@ impl<'a> Iterator for UnwindByteIter<'a> {
     }
 }
 
+/// An iterator that yields unwind instructions by reading from either the exception
+/// table or the exception indicies. This iterator uses `UnwindByteIter` to get the
+/// raw bytes.
+#[derive(Debug, Clone)]
+pub struct OffUnwindInstrIter {
+    byte_iter: OffUnwindByteIter,
+}
+
+impl<'a> Iterator for OffUnwindInstrIter {
+    type Item = UnwindInstruction;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match UnwindInstruction::step_iter(&mut self.byte_iter) {
+            Ok(instr) => instr,
+            Err(_) => Some(UnwindInstruction::Error),
+        }
+    }
+}
+
+impl<'a> OffUnwindInstrIter {
+    pub fn from_byte_iter(byte_iter: OffUnwindByteIter) -> Self {
+        Self { byte_iter }
+    }
+}
 /// An iterator that yields unwind instructions by reading from either the exception
 /// table or the exception indicies. This iterator uses `UnwindByteIter` to get the
 /// raw bytes.
