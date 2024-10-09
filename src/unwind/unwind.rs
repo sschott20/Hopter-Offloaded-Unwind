@@ -109,19 +109,11 @@ impl<'a> UnwindAbility<'a> {
     /// Arguments:
     /// - `exidx_entry` is the reference to a 2-word entry in the `.ARM.exidx` section.
     /// - `extab` is the slice of the whole `.ARM.extab` section.
-    fn from_bytes_off(
-        exidx_entry: &[u8; 8],
-        extab: &'a [u8],
-        entry_addr: u32,
-    ) -> Result<Self, &'static str> {
-        let exidx_entry = OffExIdxEntry::from_bytes_with_addr(exidx_entry, entry_addr)?;
+    fn from_bytes_off(exidx_entry: &[u8; 8], extab: &'a [u8]) -> Result<Self, &'static str> {
+        // dbg_println!("\nfrom_bytes_off debug");
 
-        #[cfg(feature = "offload_debug")]
-        {
-            dbg_println!("\nfrom_bytes_off debug");
-            dbg_println!("exidx_entry: {:x?}", exidx_entry);
-            dbg_println!("entry_addr: 0x{:x}", entry_addr);
-        }
+        let exidx_entry = OffExIdxEntry::from_bytes(exidx_entry)?;
+
         // The current function might not support unwinding.
         if !exidx_entry.can_unwind() {
             return Ok(Self::CantUnwind);
@@ -226,7 +218,7 @@ impl<'a> UnwindAbility<'a> {
 
             #[cfg(feature = "offload_debug")]
             {
-                dbg_println!("\nfrom_bytes_off debug");
+                dbg_println!("\nfrom_bytes_off debug normal");
                 dbg_println!("func_addr: 0x{:x}", exidx_entry.get_func_addr());
                 dbg_println!("personality: {:?}", personality);
                 dbg_println!("instrs: {:?}", unw_instr_iter);
@@ -248,14 +240,12 @@ impl<'a> UnwindAbility<'a> {
     fn from_bytes_check(exidx_entry: &[u8; 8], extab: &'a [u8]) -> Result<(), &'static str> {
         let exidx_entry = ExIdxEntry::from_bytes(exidx_entry)?;
 
-        #[cfg(feature = "offload_debug")]
-        {
-            dbg_println!("\nfrom_bytes_check debug");
-            dbg_println!("exidx_entry: {:x?}", exidx_entry);
-        }
-
         // The current function might not support unwinding.
         if !exidx_entry.can_unwind() {
+            #[cfg(feature = "offload_debug")]
+            {
+                dbg_println!("\nfrom_bytes_check doesn't support unwinding");
+            }
             return Ok(());
         }
 
@@ -282,7 +272,10 @@ impl<'a> UnwindAbility<'a> {
             let extab_entry_addr = exidx_entry.get_extab_entry_addr() as usize;
             let extab_start_addr = &extab[0] as *const u8 as usize;
             let entry_offset = extab_entry_addr - extab_start_addr;
+
             let (extab_entry, lsda_slice) = ExTabEntry::from_bytes(extab, entry_offset)?;
+            dbg_println!("\nfrom_bytes_off");
+
             let lsda =
                 unw_lsda::LSDA::new(lsda_slice, gimli::LittleEndian, exidx_entry.get_func_addr());
 
@@ -292,7 +285,7 @@ impl<'a> UnwindAbility<'a> {
                 dbg_println!("func_addr: 0x{:x}", exidx_entry.get_func_addr());
                 dbg_println!("personality: {:?}", exidx_entry.get_personality());
                 dbg_println!("instrs: {:?}", extab_entry.get_unw_instr_iter());
-                dbg_println!("lsda: None");
+                dbg_println!("lsda: {:?}", lsda);
             }
 
             return Ok(());
@@ -362,7 +355,7 @@ impl<'a> UnwindAbility<'a> {
         match Self::from_bytes_off(
             <&[u8; 8]>::try_from(&exidx_entry[0..8]).unwrap(),
             extab,
-            exidx_addr,
+            // exidx_addr,
         ) {
             Ok(s) => {
                 *self = s;
