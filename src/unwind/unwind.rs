@@ -155,7 +155,11 @@ impl<'a> UnwindAbility<'a> {
         } else {
             let extab_entry_addr = exidx_entry.get_extab_entry_addr() as usize;
             let session = match unsafe { G_UART_SESSION.as_mut() } {
-                Some(s) => s,
+                Some(s) => {
+                    #[cfg(feature = "offload_debug")]
+                    dbg_println!("Session Aquired");
+                    s
+                }
                 None => {
                     #[cfg(feature = "offload_debug")]
                     dbg_println!("No session");
@@ -231,6 +235,7 @@ impl<'a> UnwindAbility<'a> {
                 dbg_println!("personality: {:?}", personality);
                 dbg_println!("instrs: {:?}", unw_instr_iter);
                 dbg_println!("lsda: {:?}", lsda_d);
+                dbg_println!("Session Dropped");
             }
             Ok(Self::CanUnwind(UnwindInfo {
                 func_addr: exidx_entry.get_func_addr(),
@@ -334,7 +339,11 @@ impl<'a> UnwindAbility<'a> {
         extab: &'a [u8],
     ) -> Result<(), &'static str> {
         let session = match unsafe { G_UART_SESSION.as_mut() } {
-            Some(s) => s,
+            Some(s) => {
+                #[cfg(feature = "offload_debug")]
+                dbg_println!("Session Aquired");
+                s
+            }
             None => {
                 #[cfg(feature = "offload_debug")]
                 dbg_println!("No session");
@@ -365,6 +374,8 @@ impl<'a> UnwindAbility<'a> {
 
         let exidx_addr = u32::from_le_bytes(exidx_addr_bytes[0..4].try_into().unwrap());
 
+        #[cfg(feature = "offload_debug")]
+        dbg_println!("Session Droped");
         match Self::from_bytes_off(
             <&[u8; 8]>::try_from(&exidx_entry[0..8]).unwrap(),
             extab,
@@ -1411,7 +1422,7 @@ fn get_exidx() -> &'static [u8] {
         );
 
         let len = end.byte_offset_from(start) as usize;
-        dbg_println!("\nstart : {:?}, end: {:?}, len: {:x?}", start, end, len);
+        // dbg_println!("\nstart : {:?}, end: {:?}, len: {:x?}", start, end, len);
         // dbg_println!("\nfull exidx: {:x?}", slice::from_raw_parts(start, len));
         slice::from_raw_parts(start, len)
     }

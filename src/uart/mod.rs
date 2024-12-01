@@ -10,7 +10,7 @@ use stm32f4xx_hal::{
 };
 
 pub static mut G_UART_SESSION: Option<Session<UsartSerial, UsartTimer, 150, 2>> = None;
-
+// pub static mut G_UART_SESSION: Mutex<Option<Session<UsartSerial, UsartTimer, 150, 2>>> = Mutex::new(None);
 pub static G_UART_MAILBOX: Mailbox = Mailbox::new();
 pub static mut G_UART_RX: Option<Rx<USART1>> = None;
 pub static mut G_UART_MAX_SIZE: usize = 0;

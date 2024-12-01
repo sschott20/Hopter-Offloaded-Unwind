@@ -9,7 +9,7 @@ readme = "README.md"
 categories = ["embedded", "no-std"]
 
 [features]
-default = ["unwind", "offload_debug"]
+default = ["unwind"]
 # Enable unwinding to clean up panicked tasks.
 unwind = ["dep:gimli", "dep:fallible-iterator"]
 # Print the program counter (PC) of each function in the unwound stack.

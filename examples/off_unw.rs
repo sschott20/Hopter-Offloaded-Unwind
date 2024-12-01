@@ -2,27 +2,31 @@
 #![no_main]
 #![feature(asm_const)]
 #![feature(naked_functions)]
-
+#![allow(warnings)]
 extern crate alloc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use hadusos::Session;
-// use hopter::time::sleep_ms;
+use hopter::unwind::unw_catch::catch_unwind;
+
 use hopter::{
     debug::semihosting::{self, dbg_println},
     task::{self, main},
-    time::sleep_ms,
+    time::{get_tick, sleep_ms},
     uart::{UsartSerial, UsartTimer, G_UART_MAILBOX, G_UART_RBYTE, G_UART_RX, G_UART_SESSION},
 };
 use hopter_proc_macro::handler;
 use stm32f4xx_hal::serial::{Rx, Tx};
 use stm32f4xx_hal::uart::Config;
 use stm32f4xx_hal::{pac::USART1, prelude::*};
+
 // Attribute `#[main]` marks the function as the entry function for the main
 // task. The function name can be arbitrary. The main function should accept
 // one argument which is the Cortex-M core peripherals.
 #[main]
 fn main(_: cortex_m::Peripherals) {
     dbg_println!("Beginning unw_iter example: Initializing global hadusos session");
+
+    let t = get_tick();
 
     // Initialize the hadusos Session with the UART peripheral.
     // First we acquire the peripherals for the tx and rx pins
@@ -59,43 +63,36 @@ fn main(_: cortex_m::Peripherals) {
     let session: Session<UsartSerial, UsartTimer, 150, 2> = Session::new(usart_serial, usart_timer);
 
     unsafe { G_UART_SESSION = Some(session) };
+    
+    dbg_println!("Session initialized in {} ms", get_tick() - t);
 
-    // Start a task running the `will_panic` function.
-    // The task is restartable. When the panic occurs, the task's stack will be
-    // unwound, and the task will be restarted.
-    task::build()
-        .set_entry(will_panic)
-        .spawn_restartable()
-        .unwrap();
-}
-
-fn will_panic() {
-    // A persistent counter.
-    static CNT: AtomicUsize = AtomicUsize::new(0);
-
-    // Every time the task runs we increment it by 1.
-    let cnt = CNT.fetch_add(1, Ordering::SeqCst);
-
-    dbg_println!("Current count: {}", cnt);
-
-    // Panic and get restarted for 5 times.
-    if cnt == 0 {
-        dbg_println!("Panic now!");
-        panic!();
-    }
-    let _ = sleep_ms(120000);
-    dbg_println!("Finished");
+    panic_tests(1);
 
     // When running with QEMU, this will cause the QEMU process to terminate.
     // Do not include this line when running with OpenOCD, because it will
     // clobber its internal states.
     #[cfg(feature = "qemu")]
     semihosting::terminate(true);
+
     #[cfg(not(feature = "qemu"))]
     {
         dbg_println!("test complete!");
         loop {}
     }
+}
+
+fn f() {
+    panic!("panicking in f()");
+}
+
+fn panic_tests(iterations: usize) {
+    let mut start = get_tick();
+    for _ in 0..iterations {
+        let result = catch_unwind(f);
+    }
+    let mut finish = get_tick();
+    dbg_println!("Time to panic {} times: {} ms", iterations, finish - start);
+    dbg_println!("Average time: {} ms", (finish - start) / iterations as u32);
 }
 
 #[handler(USART1)]
